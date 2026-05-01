@@ -30,43 +30,49 @@ Chat_Leave = False
 
 app = Flask(__name__)
 
-# ---------------------- TRAFFIC LOGGING SYSTEM ----------------------
+# ---------------------- DEEP TRAFFIC LOGGING SYSTEM ----------------------
 LOG_FILE = "outgoing_traffic.log"
 
-def log_traffic(req_type, target):
-    """Writes an outgoing request to a local log file."""
+def log_traffic(req_type, target, headers=None, payload=None):
+    """Writes an outgoing request with raw data to a local log file."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if req_type == "TCP":
-        color = "#00FFFF" # Cyan
-    elif req_type == "AIOHTTP":
-        color = "#FF00FF" # Magenta
-    else:
-        color = "#FFFF00" # Yellow
+    
+    if req_type == "TCP OUT": color = "#00FFFF" # Cyan
+    elif req_type == "TCP IN": color = "#00FF7F" # Spring Green
+    elif req_type == "AIOHTTP": color = "#FF00FF" # Magenta
+    else: color = "#FFFF00" # Yellow
         
-    log_entry = f"<span style='color: #888;'>[{timestamp}]</span> <span style='color: {color};'>[{req_type}]</span> {target}<br>\n"
+    # Main log line
+    log_entry = f"<div style='margin-bottom: 5px;'><span style='color: #888;'>[{timestamp}]</span> <span style='color: {color};'>[{req_type}]</span> {target}</div>\n"
+    
+    # Expandable raw data section
+    if headers or payload:
+        log_entry += f"<details style='margin-left: 20px; margin-bottom: 15px; color: #aaa; background: #161b22; padding: 5px; border-radius: 4px; border: 1px solid #30363d;'><summary style='cursor: pointer; color: #58a6ff;'>View Raw Data</summary><pre style='white-space: pre-wrap; word-wrap: break-word; font-size: 12px;'>"
+        if headers:
+            log_entry += f"<b>Headers:</b>\n{json.dumps(headers, indent=2)}\n\n"
+        if payload:
+            if isinstance(payload, bytes):
+                log_entry += f"<b>Payload (HEX):</b>\n{payload.hex()}\n"
+            else:
+                log_entry += f"<b>Payload:</b>\n{payload}\n"
+        log_entry += "</pre></details>\n"
+
     with open(LOG_FILE, "a") as f:
         f.write(log_entry)
 
-# Monkey Patch requests library globally (Catches all traffic from xHeaders.py etc.)
+# Monkey Patch requests library globally for Sync requests
 old_api_request = requests.api.request
 def new_api_request(method, url, **kwargs):
-    log_traffic("REQUESTS", f"{method.upper()} {url}")
+    log_traffic("REQUESTS", f"{method.upper()} {url}", headers=kwargs.get("headers"), payload=kwargs.get("data") or kwargs.get("json"))
     return old_api_request(method, url, **kwargs)
 requests.api.request = new_api_request
 
 old_session_request = requests.Session.request
 def new_session_request(self, method, url, *args, **kwargs):
-    log_traffic("REQUESTS", f"{method.upper()} {url}")
+    log_traffic("REQUESTS", f"{method.upper()} {url}", headers=kwargs.get("headers"), payload=kwargs.get("data") or kwargs.get("json"))
     return old_session_request(self, method, url, *args, **kwargs)
 requests.Session.request = new_session_request
-
-# AIOHTTP Trace config
-async def on_request_start(session, trace_config_ctx, params):
-    log_traffic("AIOHTTP", f"{params.method.upper()} {params.url}")
-
-trace_config = aiohttp.TraceConfig()
-trace_config.on_request_start.append(on_request_start)
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------------
 
 Hr = {
     'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 11; ASUS_Z01QD Build/PI)",
@@ -116,7 +122,10 @@ async def GeNeRaTeAccEss(uid , password):
         "client_type": "2",
         "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
         "client_id": "100067"}
-    async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
+    
+    log_traffic("AIOHTTP", f"POST {url}", headers=headers, payload=data)
+
+    async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=Hr, data=data) as response:
             if response.status != 200: return "Failed to get access token"
             data = await response.json()
@@ -191,7 +200,8 @@ async def MajorLogin(payload):
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
-    async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
+    log_traffic("AIOHTTP", f"POST {url}", headers=Hr, payload=payload)
+    async with aiohttp.ClientSession() as session:
         async with session.post(url, data=payload, headers=Hr, ssl=ssl_context) as response:
             if response.status == 200: return await response.read()
             return None
@@ -202,7 +212,8 @@ async def GetLoginData(base_url, payload, token):
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
     Hr['Authorization']= f"Bearer {token}"
-    async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
+    log_traffic("AIOHTTP", f"POST {url}", headers=Hr, payload=payload)
+    async with aiohttp.ClientSession() as session:
         async with session.post(url, data=payload, headers=Hr, ssl=ssl_context) as response:
             if response.status == 200: return await response.read()
             return None
@@ -256,23 +267,31 @@ async def SEndMsG(H , message , Uid , chat_id , key , iv):
     return msg_packet
 
 async def SEndPacKeT(OnLinE , ChaT , TypE , PacKeT):
-    if TypE == 'ChaT' and ChaT: whisper_writer.write(PacKeT) ; await whisper_writer.drain()
-    elif TypE == 'OnLine': online_writer.write(PacKeT) ; await online_writer.drain()
+    if TypE == 'ChaT' and ChaT: 
+        whisper_writer.write(PacKeT) 
+        log_traffic("TCP OUT", "Chat Server", payload=PacKeT)
+        await whisper_writer.drain()
+    elif TypE == 'OnLine': 
+        online_writer.write(PacKeT) 
+        log_traffic("TCP OUT", "Online Server", payload=PacKeT)
+        await online_writer.drain()
     else: return 'UnsoPorTed TypE ! >> ErrrroR (:():)' 
            
 async def TcPOnLine(ip, port, key, iv, AutHToKen, reconnect_delay=0.5):
     global online_writer , spam_room , whisper_writer , spammer_uid , spam_chat_id , spam_uid , XX , uid , Spy,data2, Chat_Leave
     while True:
         try:
-            log_traffic("TCP", f"Connecting TcPOnLine to {ip}:{port}")
+            log_traffic("TCP OUT", f"Connecting TcPOnLine to {ip}:{port}")
             reader , writer = await asyncio.open_connection(ip, int(port))
             online_writer = writer
             bytes_payload = bytes.fromhex(AutHToKen)
             online_writer.write(bytes_payload)
+            log_traffic("TCP OUT", f"{ip}:{port} [Auth Token]", payload=bytes_payload)
             await online_writer.drain()
             while True:
                 data2 = await reader.read(9999)
                 if not data2: break
+                log_traffic("TCP IN", f"{ip}:{port} [Response]", payload=data2)
                 
                 if data2.hex().startswith('0500') and len(data2.hex()) > 1000:
                     try:
@@ -320,11 +339,12 @@ async def TcPChaT(ip, port, AutHToKen, key, iv, LoGinDaTaUncRypTinG, ready_event
     global spam_room , whisper_writer , spammer_uid , spam_chat_id , spam_uid , online_writer , chat_id , XX , uid , Spy,data2, Chat_Leave
     while True:
         try:
-            log_traffic("TCP", f"Connecting TcPChaT to {ip}:{port}")
+            log_traffic("TCP OUT", f"Connecting TcPChaT to {ip}:{port}")
             reader , writer = await asyncio.open_connection(ip, int(port))
             whisper_writer = writer
             bytes_payload = bytes.fromhex(AutHToKen)
             whisper_writer.write(bytes_payload)
+            log_traffic("TCP OUT", f"{ip}:{port} [Auth Token]", payload=bytes_payload)
             await whisper_writer.drain()
             ready_event.set()
             if LoGinDaTaUncRypTinG.Clan_ID:
@@ -334,10 +354,14 @@ async def TcPChaT(ip, port, AutHToKen, key, iv, LoGinDaTaUncRypTinG, ready_event
                 print(f' - Clan Uid > {clan_id}')
                 print(f' - BoT ConnEcTed WiTh CLan ChaT SuccEssFuLy ! ')
                 pK = await AuthClan(clan_id , clan_compiled_data , key , iv)
-                if whisper_writer: whisper_writer.write(pK) ; await whisper_writer.drain()
+                if whisper_writer: 
+                    whisper_writer.write(pK) 
+                    log_traffic("TCP OUT", f"{ip}:{port} [Auth Clan]", payload=pK)
+                    await whisper_writer.drain()
             while True:
                 data = await reader.read(9999)
                 if not data: break
+                log_traffic("TCP IN", f"{ip}:{port} [Response]", payload=data)
                 
                 if data.hex().startswith("120000"):
 
@@ -633,16 +657,19 @@ def view_logs():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Bot Traffic Monitor</title>
-        <meta http-equiv="refresh" content="3"> <!-- Auto-refresh every 3 seconds -->
+        <title>Bot Traffic Monitor (Raw Dump)</title>
+        <meta http-equiv="refresh" content="5"> <!-- Auto-refresh every 5 seconds -->
         <style>
             body {{ background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; line-height: 1.5; }}
             h2 {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px; }}
             .console {{ background: #010409; padding: 15px; border-radius: 5px; border: 1px solid #30363d; overflow-y: auto; height: 80vh; }}
+            details > summary {{ list-style: none; outline: none; }}
+            details > summary::-webkit-details-marker {{ display: none; }}
         </style>
     </head>
     <body>
-        <h2>📡 Live Outgoing Traffic Monitor</h2>
+        <h2>📡 Live Raw Outgoing Traffic Monitor</h2>
+        <p style="color: #8b949e; font-size: 14px;">Click "View Raw Data" to inspect Headers and Hex payloads.</p>
         <div class="console">
             {log_data}
         </div>
@@ -669,7 +696,7 @@ async def MaiiiinE():
     # BOT LOGIN UID
     BOT_UID = int('15375747193')  # <-- FIXED BOT UID
 
-    Uid, Pw = '4766423362', 'B48A29ADA8797BD9C126E4349EB58D2DC71423BDFBDDF4444A0D9C0CED63CDDD'
+    Uid, Pw = '4711398093', '1C6899831D0FFDF84E5BAFB7B76F915E086FDB78F0F9C7355BD7DFF0A51798A0'
 
     open_id, access_token = await GeNeRaTeAccEss(Uid, Pw)
     if not open_id or not access_token:
@@ -744,8 +771,10 @@ async def StarTinG():
             await asyncio.wait_for(MaiiiinE(), timeout=7 * 60 * 60)
         except asyncio.TimeoutError:
             print("Token ExpiRed ! , ResTartinG")
+            await asyncio.sleep(5)  # <-- Added cooldown to prevent endless API flooding
         except Exception as e:
             print(f"ErroR TcP - {e} => ResTarTinG ...")
+            await asyncio.sleep(5)  # <-- Added cooldown to prevent endless API flooding
 
 
 if __name__ == '__main__':
