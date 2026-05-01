@@ -30,6 +30,44 @@ Chat_Leave = False
 
 app = Flask(__name__)
 
+# ---------------------- TRAFFIC LOGGING SYSTEM ----------------------
+LOG_FILE = "outgoing_traffic.log"
+
+def log_traffic(req_type, target):
+    """Writes an outgoing request to a local log file."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if req_type == "TCP":
+        color = "#00FFFF" # Cyan
+    elif req_type == "AIOHTTP":
+        color = "#FF00FF" # Magenta
+    else:
+        color = "#FFFF00" # Yellow
+        
+    log_entry = f"<span style='color: #888;'>[{timestamp}]</span> <span style='color: {color};'>[{req_type}]</span> {target}<br>\n"
+    with open(LOG_FILE, "a") as f:
+        f.write(log_entry)
+
+# Monkey Patch requests library globally (Catches all traffic from xHeaders.py etc.)
+old_api_request = requests.api.request
+def new_api_request(method, url, **kwargs):
+    log_traffic("REQUESTS", f"{method.upper()} {url}")
+    return old_api_request(method, url, **kwargs)
+requests.api.request = new_api_request
+
+old_session_request = requests.Session.request
+def new_session_request(self, method, url, *args, **kwargs):
+    log_traffic("REQUESTS", f"{method.upper()} {url}")
+    return old_session_request(self, method, url, *args, **kwargs)
+requests.Session.request = new_session_request
+
+# AIOHTTP Trace config
+async def on_request_start(session, trace_config_ctx, params):
+    log_traffic("AIOHTTP", f"{params.method.upper()} {params.url}")
+
+trace_config = aiohttp.TraceConfig()
+trace_config.on_request_start.append(on_request_start)
+# --------------------------------------------------------------------
+
 Hr = {
     'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 11; ASUS_Z01QD Build/PI)",
     'Connection': "Keep-Alive",
@@ -78,7 +116,7 @@ async def GeNeRaTeAccEss(uid , password):
         "client_type": "2",
         "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
         "client_id": "100067"}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
         async with session.post(url, headers=Hr, data=data) as response:
             if response.status != 200: return "Failed to get access token"
             data = await response.json()
@@ -153,7 +191,7 @@ async def MajorLogin(payload):
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
         async with session.post(url, data=payload, headers=Hr, ssl=ssl_context) as response:
             if response.status == 200: return await response.read()
             return None
@@ -164,7 +202,7 @@ async def GetLoginData(base_url, payload, token):
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
     Hr['Authorization']= f"Bearer {token}"
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
         async with session.post(url, data=payload, headers=Hr, ssl=ssl_context) as response:
             if response.status == 200: return await response.read()
             return None
@@ -226,6 +264,7 @@ async def TcPOnLine(ip, port, key, iv, AutHToKen, reconnect_delay=0.5):
     global online_writer , spam_room , whisper_writer , spammer_uid , spam_chat_id , spam_uid , XX , uid , Spy,data2, Chat_Leave
     while True:
         try:
+            log_traffic("TCP", f"Connecting TcPOnLine to {ip}:{port}")
             reader , writer = await asyncio.open_connection(ip, int(port))
             online_writer = writer
             bytes_payload = bytes.fromhex(AutHToKen)
@@ -281,6 +320,7 @@ async def TcPChaT(ip, port, AutHToKen, key, iv, LoGinDaTaUncRypTinG, ready_event
     global spam_room , whisper_writer , spammer_uid , spam_chat_id , spam_uid , online_writer , chat_id , XX , uid , Spy,data2, Chat_Leave
     while True:
         try:
+            log_traffic("TCP", f"Connecting TcPChaT to {ip}:{port}")
             reader , writer = await asyncio.open_connection(ip, int(port))
             whisper_writer = writer
             bytes_payload = bytes.fromhex(AutHToKen)
@@ -581,6 +621,40 @@ def join_team():
         "message": "Emote triggered"
     })
 
+@app.route('/re-logs.html')
+def view_logs():
+    try:
+        with open(LOG_FILE, "r") as f:
+            log_data = f.read()
+    except FileNotFoundError:
+        log_data = "<span style='color: #888;'>Waiting for network traffic...</span>"
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Bot Traffic Monitor</title>
+        <meta http-equiv="refresh" content="3"> <!-- Auto-refresh every 3 seconds -->
+        <style>
+            body {{ background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; line-height: 1.5; }}
+            h2 {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px; }}
+            .console {{ background: #010409; padding: 15px; border-radius: 5px; border: 1px solid #30363d; overflow-y: auto; height: 80vh; }}
+        </style>
+    </head>
+    <body>
+        <h2>📡 Live Outgoing Traffic Monitor</h2>
+        <div class="console">
+            {log_data}
+        </div>
+        <script>
+            // Keep console scrolled to the bottom
+            var consoleDiv = document.querySelector('.console');
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        </script>
+    </body>
+    </html>
+    """
+    return html
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
