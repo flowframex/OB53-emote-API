@@ -1,4 +1,4 @@
-import requests , os , psutil , sys , jwt , pickle , json , binascii , time , urllib3 , base64 , datetime , re , socket , threading , ssl , pytz , aiohttp
+import requests , os , psutil , sys , jwt , pickle , json , binascii , time , urllib3 , base64 , datetime , re , socket , threading , ssl , pytz , aiohttp , html
 from flask import Flask, request, jsonify
 from protobuf_decoder.protobuf_decoder import Parser
 from xC4 import * ; from xHeaders import *
@@ -11,8 +11,6 @@ from cfonts import render, say
 
 
 #EMOTES BY YASH X CODEX
-
-
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  
 
@@ -33,6 +31,19 @@ app = Flask(__name__)
 # ---------------------- DEEP TRAFFIC LOGGING SYSTEM ----------------------
 LOG_FILE = "outgoing_traffic.log"
 
+def format_payload(payload):
+    """Formats payloads to look like Burp Suite's raw/hex views"""
+    if not payload:
+        return ""
+    if isinstance(payload, dict):
+        return html.escape(json.dumps(payload, indent=2))
+    if isinstance(payload, bytes):
+        # Convert printable bytes to text, replace non-printable with a dot (.)
+        text_repr = "".join(chr(b) if 32 <= b <= 126 or b in (9, 10, 13) else '.' for b in payload)
+        hex_repr = payload.hex()
+        return f"--- TEXT VIEW ---\n{html.escape(text_repr)}\n\n--- HEX VIEW ---\n{hex_repr}"
+    return html.escape(str(payload))
+
 def log_traffic(req_type, target, headers=None, payload=None):
     """Writes an outgoing request with raw data to a local log file."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -47,17 +58,19 @@ def log_traffic(req_type, target, headers=None, payload=None):
     
     # Expandable raw data section
     if headers or payload:
-        log_entry += f"<details style='margin-left: 20px; margin-bottom: 15px; color: #aaa; background: #161b22; padding: 5px; border-radius: 4px; border: 1px solid #30363d;'><summary style='cursor: pointer; color: #58a6ff;'>View Raw Data</summary><pre style='white-space: pre-wrap; word-wrap: break-word; font-size: 12px;'>"
+        log_entry += f"<details style='margin-left: 20px; margin-bottom: 15px; color: #aaa; background: #161b22; padding: 5px; border-radius: 4px; border: 1px solid #30363d;'><summary style='cursor: pointer; color: #58a6ff; user-select: none;'>▶ View Raw Data</summary><pre style='white-space: pre-wrap; word-wrap: break-word; font-size: 12px; margin-top: 10px;'>"
+        
         if headers:
-            log_entry += f"<b>Headers:</b>\n{json.dumps(headers, indent=2)}\n\n"
+            # Handle headers gracefully (can be custom mapping objects)
+            headers_dict = dict(headers)
+            log_entry += f"<b>Headers:</b>\n{html.escape(json.dumps(headers_dict, indent=2, default=str))}\n\n"
+        
         if payload:
-            if isinstance(payload, bytes):
-                log_entry += f"<b>Payload (HEX):</b>\n{payload.hex()}\n"
-            else:
-                log_entry += f"<b>Payload:</b>\n{payload}\n"
+            log_entry += f"<b>Payload:</b>\n{format_payload(payload)}\n"
+            
         log_entry += "</pre></details>\n"
 
-    with open(LOG_FILE, "a") as f:
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(log_entry)
 
 # Monkey Patch requests library globally for Sync requests
@@ -72,6 +85,13 @@ def new_session_request(self, method, url, *args, **kwargs):
     log_traffic("REQUESTS", f"{method.upper()} {url}", headers=kwargs.get("headers"), payload=kwargs.get("data") or kwargs.get("json"))
     return old_session_request(self, method, url, *args, **kwargs)
 requests.Session.request = new_session_request
+
+# AIOHTTP Trace config
+async def on_request_start(session, trace_config_ctx, params):
+    log_traffic("AIOHTTP", f"{params.method.upper()} {params.url}")
+
+trace_config = aiohttp.TraceConfig()
+trace_config.on_request_start.append(on_request_start)
 # -------------------------------------------------------------------------
 
 Hr = {
@@ -645,43 +665,74 @@ def join_team():
         "message": "Emote triggered"
     })
 
+@app.route('/api/logs')
+def api_logs():
+    """Returns the raw log data to be fetched by the JS in the background."""
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<span style='color: #888;'>Waiting for network traffic...</span>"
+
 @app.route('/re-logs.html')
 def view_logs():
-    try:
-        with open(LOG_FILE, "r") as f:
-            log_data = f.read()
-    except FileNotFoundError:
-        log_data = "<span style='color: #888;'>Waiting for network traffic...</span>"
-
-    html = f"""
+    """Serves the HTML shell that fetches logs via AJAX without full page reloads."""
+    html_page = """
     <!DOCTYPE html>
     <html>
     <head>
         <title>Bot Traffic Monitor (Raw Dump)</title>
-        <meta http-equiv="refresh" content="5"> <!-- Auto-refresh every 5 seconds -->
         <style>
-            body {{ background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; line-height: 1.5; }}
-            h2 {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px; }}
-            .console {{ background: #010409; padding: 15px; border-radius: 5px; border: 1px solid #30363d; overflow-y: auto; height: 80vh; }}
-            details > summary {{ list-style: none; outline: none; }}
-            details > summary::-webkit-details-marker {{ display: none; }}
+            body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; line-height: 1.5; }
+            h2 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
+            .console { background: #010409; padding: 15px; border-radius: 5px; border: 1px solid #30363d; overflow-y: auto; height: 80vh; }
+            details > summary { list-style: none; outline: none; display: inline-block; }
+            details > summary::-webkit-details-marker { display: none; }
         </style>
     </head>
     <body>
         <h2>📡 Live Raw Outgoing Traffic Monitor</h2>
-        <p style="color: #8b949e; font-size: 14px;">Click "View Raw Data" to inspect Headers and Hex payloads.</p>
-        <div class="console">
-            {log_data}
+        <p style="color: #8b949e; font-size: 14px;">Click "▶ View Raw Data" to inspect Headers and Burp-style Hex/Text payloads.</p>
+        
+        <div class="console" id="log-container">
+            <span style='color: #888;'>Loading network traffic...</span>
         </div>
+        
         <script>
-            // Keep console scrolled to the bottom
-            var consoleDiv = document.querySelector('.console');
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            const container = document.getElementById('log-container');
+            let autoScroll = true;
+
+            // Detect if user has scrolled up to pause autoscrolling
+            container.addEventListener('scroll', () => {
+                autoScroll = container.scrollHeight - container.scrollTop <= container.clientHeight + 10;
+            });
+
+            async function fetchLogs() {
+                try {
+                    const response = await fetch('/api/logs');
+                    const data = await response.text();
+                    if (data) {
+                        // Only update if there's new data to prevent flickering of open details tabs
+                        if (container.innerHTML !== data) {
+                            container.innerHTML = data;
+                            if (autoScroll) {
+                                container.scrollTop = container.scrollHeight;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to fetch logs:', e);
+                }
+            }
+            
+            // Poll for new logs every 2 seconds quietly
+            setInterval(fetchLogs, 2000);
+            fetchLogs();
         </script>
     </body>
     </html>
     """
-    return html
+    return html_page
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
